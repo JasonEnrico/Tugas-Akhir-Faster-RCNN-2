@@ -37,29 +37,11 @@ class Dataset:
   A VOC dataset iterator for a particular split (train, val, etc.)
   """
 
-  num_classes = 21
+  num_classes = 3
   class_index_to_name = {
     0:  "background",
-    1:  "aeroplane",
-    2:  "bicycle",
-    3:  "bird",
-    4:  "boat",
-    5:  "bottle",
-    6:  "bus",
-    7:  "car",
-    8:  "cat",
-    9:  "chair",
-    10: "cow",
-    11: "diningtable",
-    12: "dog",
-    13: "horse",
-    14: "motorbike",
-    15: "person",
-    16: "pottedplant",
-    17: "sheep",
-    18: "sofa",
-    19: "train",
-    20: "tvmonitor"
+    1:  "no_helmet",
+    2:  "helmet"
   }
 
   def __init__(self, split, image_preprocessing_params, compute_feature_map_shape_fn, feature_pixels = 16, dir = "VOCdevkit/VOC2007", augment = True, shuffle = True, allow_difficult = False, cache = True):
@@ -95,8 +77,8 @@ class Dataset:
     self.class_index_to_name = self._get_classes()
     self.class_name_to_index = { class_name: class_index for (class_index, class_name) in self.class_index_to_name.items() }
     self.num_classes = len(self.class_index_to_name)
-    assert self.num_classes == Dataset.num_classes, "Dataset does not have the expected number of classes (found %d but expected %d)" % (self.num_classes, Dataset.num_classes)
-    assert self.class_index_to_name == Dataset.class_index_to_name, "Dataset does not have the expected class mapping"
+    # assert self.num_classes == Dataset.num_classes, "Dataset does not have the expected number of classes (found %d but expected %d)" % (self.num_classes, Dataset.num_classes)
+    # assert self.class_index_to_name == Dataset.class_index_to_name, "Dataset does not have the expected class mapping"
     self._filepaths = self._get_filepaths()
     self.num_samples = len(self._filepaths)
     self._gt_boxes_by_filepath = self._get_ground_truth_boxes(filepaths = self._filepaths, allow_difficult = allow_difficult)
@@ -182,10 +164,27 @@ class Dataset:
     )
 
   def _get_classes(self):
-    imageset_dir = os.path.join(self._dir, "ImageSets", "Main")
-    classes = set([ os.path.basename(path).split("_")[0] for path in Path(imageset_dir).glob("*_" + self.split + ".txt") ])
-    assert len(classes) > 0, "No classes found in ImageSets/Main for '%s' split" % self.split
-    class_index_to_name = { (1 + v[0]): v[1] for v in enumerate(sorted(classes)) }
+    # Ambil semua nama file dari split (train.txt, val.txt, dll)
+    image_list_file = os.path.join(self._dir, "ImageSets", "Main", self.split + ".txt")
+    with open(image_list_file) as f:
+        basenames = [line.strip() for line in f.readlines()]
+
+    classes = set()
+    for basename in basenames:
+        annotation_path = os.path.join(self._dir, "Annotations", basename + ".xml")
+        if not os.path.exists(annotation_path):
+            continue
+        tree = ET.parse(annotation_path)
+        root = tree.getroot()
+        for obj in root.findall("object"):
+            class_name = obj.find("name").text.strip().lower()
+            classes.add(class_name)
+
+    print(f"Classes ditemukan dari split '{self.split}':", classes)
+    if len(classes) == 0:
+        print(f"[WARNING] Tidak ada class ditemukan di split '{self.split}', lanjutkan tetap...")
+
+    class_index_to_name = { (1 + i): name for i, name in enumerate(sorted(classes)) }
     class_index_to_name[0] = "background"
     return class_index_to_name
 
@@ -195,73 +194,6 @@ class Dataset:
       basenames = [ line.strip() for line in fp.readlines() ] # strip newlines
     image_paths = [ os.path.join(self._dir, "JPEGImages", basename) + ".jpg" for basename in basenames ]
     return image_paths
-
-    """
-    # Debug: 60 car training images. Handy for quick iteration and testing.
-    image_paths = [
-      "2008_000028",
-      "2008_000074",
-      "2008_000085",
-      "2008_000105",
-      "2008_000109",
-      "2008_000143",
-      "2008_000176",
-      "2008_000185",
-      "2008_000187",
-      "2008_000189",
-      "2008_000193",
-      "2008_000199",
-      "2008_000226",
-      "2008_000237",
-      "2008_000252",
-      "2008_000260",
-      "2008_000315",
-      "2008_000346",
-      "2008_000356",
-      "2008_000399",
-      "2008_000488",
-      "2008_000531",
-      "2008_000563",
-      "2008_000583",
-      "2008_000595",
-      "2008_000613",
-      "2008_000619",
-      "2008_000719",
-      "2008_000833",
-      "2008_000944",
-      "2008_000953",
-      "2008_000959",
-      "2008_000979",
-      "2008_001018",
-      "2008_001039",
-      "2008_001042",
-      "2008_001104",
-      "2008_001169",
-      "2008_001196",
-      "2008_001208",
-      "2008_001274",
-      "2008_001329",
-      "2008_001359",
-      "2008_001375",
-      "2008_001440",
-      "2008_001446",
-      "2008_001500",
-      "2008_001533",
-      "2008_001541",
-      "2008_001631",
-      "2008_001632",
-      "2008_001716",
-      "2008_001746",
-      "2008_001860",
-      "2008_001941",
-      "2008_002062",
-      "2008_002118",
-      "2008_002197",
-      "2008_002202",
-      "2011_003247"
-    ]
-    return [ os.path.join(self._dir, "JPEGImages", path) + ".jpg" for path in image_paths ]
-    """
 
   def _get_ground_truth_boxes(self, filepaths, allow_difficult):
     gt_boxes_by_filepath = {}
@@ -280,11 +212,16 @@ class Dataset:
       for obj in root.findall("object"):
         assert len(obj.findall("name")) == 1
         assert len(obj.findall("bndbox")) == 1
-        assert len(obj.findall("difficult")) == 1
-        is_difficult = int(obj.find("difficult").text) != 0
+        difficult_node = obj.find("difficult")
+        is_difficult = False
+        if difficult_node is not None:
+            is_difficult = int(difficult_node.text) != 0
+        if is_difficult and not allow_difficult:
+            continue
+
         if is_difficult and not allow_difficult:
           continue  # ignore difficult examples unless asked to include them
-        class_name = obj.find("name").text
+        class_name = obj.find("name").text.strip().lower()
         bndbox = obj.find("bndbox")
         assert len(bndbox.findall("xmin")) == 1
         assert len(bndbox.findall("ymin")) == 1
