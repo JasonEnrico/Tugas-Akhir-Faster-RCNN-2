@@ -1,11 +1,3 @@
-#
-# Faster R-CNN in PyTorch and TensorFlow 2 w/ Keras
-# pytorch/FasterRCNN/datasets/image.py
-# Copyright 2021-2022 Bart Trzynadlowski
-#
-# Image loading and pre-processing.
-#
-
 from dataclasses import dataclass
 from enum import Enum
 import imageio

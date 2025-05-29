@@ -1,12 +1,3 @@
-#
-# Faster R-CNN in PyTorch and TensorFlow 2 w/ Keras
-# pytorch/FasterRCNN/datasets/training_sample.py
-# Copyright 2021-2022 Bart Trzynadlowski
-#
-# Definition of a training sample. All items pertaining to a single sample are
-# bundled together for convenience.
-#
-
 from dataclasses import dataclass
 import numpy as np
 from PIL import Image
