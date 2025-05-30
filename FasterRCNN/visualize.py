@@ -1,87 +1,144 @@
 #
-# Faster R-CNN in PyTorch and TensorFlow 2 w/ Keras
-# pytorch/FasterRCNN/visualize.py
-# Copyright 2021-2022 Bart Trzynadlowski
+# Modul Perhitungan Statistik Training dan Evaluasi Model Faster R-CNN
+# File: statistics.py
 #
-# Routines for visualizing model results and debug information.
+# Berisi class untuk menghitung statistik selama training (loss) dan evaluasi (precision-recall, mAP)
+# Digunakan pada tahap training maupun validasi model.
 #
 
+from collections import defaultdict
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageColor
+from .models.math_utils import intersection_over_union
 
-def _draw_rectangle(ctx, corners, color, thickness = 4):
-  y_min, x_min, y_max, x_max = corners
-  ctx.rectangle(xy = [(x_min, y_min), (x_max, y_max)], outline = color, width = thickness)
+# Class utama untuk menghitung statistik training (loss)
+class TrainingStatistics:
+    def __init__(self):
+        self.rpn_class_loss = float("inf")
+        self.rpn_regression_loss = float("inf")
+        self.detector_class_loss = float("inf")
+        self.detector_regression_loss = float("inf")
+        self._rpn_class_losses = []
+        self._rpn_regression_losses = []
+        self._detector_class_losses = []
+        self._detector_regression_losses = []
 
-def _draw_text(image, text, position, color, scale = 1.0, offset_lines = 0):
-  """
-  Parameters
-  ----------
-  image : PIL.Image
-    Image object to draw on.
-  text : str
-    Text to render.
-  position : Tuple[float, float]
-    Location of top-left corner of text string in pixels.
-  offset_lines : float
-    Number of lines to offset the vertical position by, where a line is the
-    text height.
-  """
-  font = ImageFont.load_default()
-  text_size = font.getsize(text)
-  text_image = Image.new(mode = "RGBA", size = text_size, color = (0, 0, 0, 0))
-  ctx = ImageDraw.Draw(text_image)
-  ctx.text(xy = (0, 0), text = text, font = font, fill = color)
-  scaled = text_image.resize((round(text_image.width * scale), round(text_image.height * scale)))
-  position = (round(position[0]), round(position[1] + offset_lines * scaled.height))
-  image.paste(im = scaled, box = position, mask = scaled)
+    # Memasukkan hasil loss setiap batch training
+    def on_training_step(self, loss):
+        self._rpn_class_losses.append(loss.rpn_class)
+        self._rpn_regression_losses.append(loss.rpn_regression)
+        self._detector_class_losses.append(loss.detector_class)
+        self._detector_regression_losses.append(loss.detector_regression)
+        self.rpn_class_loss = np.mean(self._rpn_class_losses)
+        self.rpn_regression_loss = np.mean(self._rpn_regression_losses)
+        self.detector_class_loss = np.mean(self._detector_class_losses)
+        self.detector_regression_loss = np.mean(self._detector_regression_losses)
 
-def _class_to_color(class_index):
-  return list(ImageColor.colormap.values())[class_index + 1]
+    # Menghasilkan format output loss untuk progress bar (tqdm)
+    def get_progbar_postfix(self):
+        return {
+            "rpn_class_loss": "%1.4f" % self.rpn_class_loss,
+            "rpn_regr_loss": "%1.4f" % self.rpn_regression_loss,
+            "detector_class_loss": "%1.4f" % self.detector_class_loss,
+            "detector_regr_loss": "%1.4f" % self.detector_regression_loss,
+            "total_loss": "%1.2f" % (self.rpn_class_loss + self.rpn_regression_loss + self.detector_class_loss + self.detector_regression_loss)
+        }
 
-def show_anchors(output_path, image, anchor_map, anchor_valid_map, gt_rpn_map, gt_boxes, display = False):
-  ctx = ImageDraw.Draw(image, mode = "RGBA")
-  
-  # Draw all ground truth boxes with thick green lines
-  for box in gt_boxes:
-    _draw_rectangle(ctx, corners = box.corners, color = (0, 255, 0))
+# Class untuk menghitung kurva Precision-Recall dan mAP (Mean Average Precision)
+class PrecisionRecallCurveCalculator:
+    def __init__(self):
+        self._unsorted_predictions_by_class_index = defaultdict(list)
+        self._object_count_by_class_index = defaultdict(int)
 
-  # Draw all object anchor boxes in yellow
-  for y in range(anchor_valid_map.shape[0]):
-    for x in range(anchor_valid_map.shape[1]):
-      for k in range(anchor_valid_map.shape[2]):  
-        if anchor_valid_map[y,x,k] <= 0 or gt_rpn_map[y,x,k,0] <= 0:
-          continue  # skip anchors excluded from training
-        if gt_rpn_map[y,x,k,1] < 1:
-          continue  # skip background anchors
-        height = anchor_map[y,x,k*4+2]
-        width = anchor_map[y,x,k*4+3]
-        cy = anchor_map[y,x,k*4+0]
-        cx = anchor_map[y,x,k*4+1]
-        corners = (cy - 0.5 * height, cx - 0.5 * width, cy + 0.5 * height, cx + 0.5 * width)
-        _draw_rectangle(ctx, corners = corners, color = (255, 255, 0), thickness = 3)
- 
-  image.save(output_path)
-  if display:
-    image.show()
+    # Menghitung akurasi prediksi per gambar (per class)
+    def _compute_correctness_of_predictions(self, scored_boxes_by_class_index, gt_boxes):
+        unsorted_predictions_by_class_index = {}
+        object_count_by_class_index = defaultdict(int)
 
-def show_detections(output_path, show_image, image, scored_boxes_by_class_index, class_index_to_name):
-  # Draw all results
-  ctx = ImageDraw.Draw(image, mode = "RGBA")
-  color_idx = 0
-  for class_index, scored_boxes in scored_boxes_by_class_index.items():
-    for i in range(scored_boxes.shape[0]):
-      scored_box = scored_boxes[i,:]
-      class_name = class_index_to_name[class_index]
-      text = "%s %1.2f" % (class_name, scored_box[4])
-      color = _class_to_color(class_index = class_index)
-      _draw_rectangle(ctx = ctx, corners = scored_box[0:4], color = color, thickness = 2)
-      _draw_text(image = image, text = text, position = (scored_box[1], scored_box[0]), color = color, scale = 1.5, offset_lines = -1)
+        for gt_box in gt_boxes:
+            object_count_by_class_index[gt_box.class_index] += 1
 
-  # Output
-  if show_image:
-    image.show()
-  if output_path is not None:
-    image.save(output_path)
-    print("Wrote detection results to '%s'" % output_path)
+        for class_index, scored_boxes in scored_boxes_by_class_index.items():
+            gt_boxes_this_class = [gt_box for gt_box in gt_boxes if gt_box.class_index == class_index]
+            ious = []
+            for gt_idx in range(len(gt_boxes_this_class)):
+                for box_idx in range(len(scored_boxes)):
+                    boxes1 = np.expand_dims(scored_boxes[box_idx][0:4], axis=0)
+                    boxes2 = np.expand_dims(gt_boxes_this_class[gt_idx].corners, axis=0)
+                    iou = intersection_over_union(boxes1, boxes2)
+                    ious.append((iou, box_idx, gt_idx))
+            ious = sorted(ious, key=lambda iou: iou[0], reverse=True)
 
+            gt_box_detected = [False] * len(gt_boxes)
+            is_true_positive = [False] * len(scored_boxes)
+
+            iou_threshold = 0.5
+            for iou, box_idx, gt_idx in ious:
+                if iou <= iou_threshold:
+                    continue
+                if is_true_positive[box_idx] or gt_box_detected[gt_idx]:
+                    continue
+                is_true_positive[box_idx] = True
+                gt_box_detected[gt_idx] = True
+
+            unsorted_predictions_by_class_index[class_index] = [
+                (scored_boxes[i][4], is_true_positive[i]) for i in range(len(scored_boxes))
+            ]
+        return unsorted_predictions_by_class_index, object_count_by_class_index
+
+    # Memasukkan hasil evaluasi dari 1 gambar ke kalkulasi keseluruhan
+    def add_image_results(self, scored_boxes_by_class_index, gt_boxes):
+        unsorted, count = self._compute_correctness_of_predictions(scored_boxes_by_class_index, gt_boxes)
+        for class_index, predictions in unsorted.items():
+            self._unsorted_predictions_by_class_index[class_index] += predictions
+        for class_index, cnt in count.items():
+            self._object_count_by_class_index[class_index] += cnt
+
+    # Menghitung AP untuk satu kelas
+    def _compute_average_precision(self, class_index):
+        sorted_predictions = sorted(self._unsorted_predictions_by_class_index[class_index], key=lambda p: p[0], reverse=True)
+        num_ground_truth = self._object_count_by_class_index[class_index]
+        recall_array, precision_array = [], []
+        tp, fp = 0, 0
+        for score, correct in sorted_predictions:
+            if correct:
+                tp += 1
+            else:
+                fp += 1
+            recall_array.append(tp / num_ground_truth)
+            precision_array.append(tp / (tp + fp))
+
+        recall_array.insert(0, 0.0)
+        recall_array.append(1.0)
+        precision_array.insert(0, 0.0)
+        precision_array.append(0.0)
+
+        for i in range(len(precision_array)):
+            precision_array[i] = np.max(precision_array[i:])
+
+        ap = 0
+        for i in range(len(recall_array) - 1):
+            dx = recall_array[i + 1] - recall_array[i]
+            dy = precision_array[i + 1]
+            ap += dy * dx
+        return ap, recall_array, precision_array
+
+    # Menghitung nilai mAP (mean Average Precision)
+    def compute_mean_average_precision(self):
+        average_precisions = []
+        for class_index in self._object_count_by_class_index:
+            ap, _, _ = self._compute_average_precision(class_index)
+            average_precisions.append(ap)
+        return np.mean(average_precisions)
+
+    # Mencetak hasil AP per kelas
+    def print_average_precisions(self, class_index_to_name):
+        labels = [class_index_to_name[idx] for idx in self._object_count_by_class_index]
+        aps = []
+        for class_index in self._object_count_by_class_index:
+            ap, _, _ = self._compute_average_precision(class_index)
+            aps.append(ap)
+        sorted_results = sorted(zip(labels, aps), key=lambda x: x[1], reverse=True)
+        print("Average Precisions:\n------------------")
+        for label, ap in sorted_results:
+            print("%s: %1.1f%%" % (label.ljust(15), ap * 100.0))
+        print("------------------")
